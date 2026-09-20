@@ -1,4 +1,5 @@
 import json
+from pyexpat.errors import messages
 import sqlite3
 import asyncio
 import os
@@ -13,8 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-groq_client = AsyncGroq(
-    api_key=os.getenv("GROQ_API_KEY") or "missing-groq-key"
+client = AsyncGroq(
+    api_key=os.getenv("GROQ_API_KEY")
 )
 
 
@@ -252,7 +253,7 @@ async def run_state_graph(user_query):
         "GENERAL (for other questions)\n"
         "Respond with exactly one word: DATABASE, POLICY, or GENERAL.")
 
-    triage_resp = await groq_client.chat.completions.create(
+    triage_resp = await client.chat.completions.create(
     
                 model="openai/gpt-oss-120b",
     
@@ -302,7 +303,7 @@ async def run_state_graph(user_query):
             }
         ]
 
-        resp = await groq_client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages = [
                 {"role": "system", "content": "You are a database access assistant. Retrieve customer or order details by calling get_customer_details or get_order_details. Never attempt to write raw database queries."},
@@ -350,7 +351,7 @@ async def run_state_graph(user_query):
             }
         }]
 
-        resp = await groq_client.chat.completions.create(
+        resp = await client.chat.completions.create(
                     model="openai/gpt-oss-120b",
                     messages = [
                         {"role": "system", "content": "You are a policy search assistant. Search policies using search_policy."},
@@ -371,7 +372,7 @@ async def run_state_graph(user_query):
     else:
         print(" [STATE: GENERAL Routing] -> Routing to general response generation...")
 
-        resp = await groq_client.chat.completions.create(
+        resp = await client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages = [
                 {"role": "system", "content": "You are a general customer support assistant. Provide helpful responses to user inquiries."},
@@ -386,7 +387,7 @@ async def run_state_graph(user_query):
     #step 3: compiler node
     print(" [STATE: Compiler Node] -> Compiling final response...")
 
-    resp2 = await groq_client.chat.completions.create(
+    resp2 = await client.chat.completions.create(
         model="openai/gpt-oss-120b",
         messages =[
             {"role":"system", "content": "You are a support agent. Compile the user request and retrieved tools context into a final answer."}
@@ -441,5 +442,4 @@ async def main():
     results2 = await run_state_graph("Is there a restocking fee for items?")
     pretty_print_run(results2)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())

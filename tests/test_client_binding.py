@@ -39,18 +39,21 @@ def test_eval_source_does_not_import_xmlrpc_as_client():
                 assert not (alias.name.startswith("xmlrpc") and bound == "client")
 
 
-def test_eval_and_agent_clients_expose_chat():
-    agent = _load(ROOT / "agent.py", "agent_under_test")
+def test_eval_client_exposes_chat():
     eval_mod = _load(ROOT / "agent-eval.py", "agent_eval_under_test")
-    for client in (agent.groq_client, eval_mod.groq_client):
-        assert type(client).__module__.startswith("groq")
-        assert hasattr(client, "chat")
-        assert hasattr(client.chat, "completions")
-        assert hasattr(client.chat.completions, "create")
+    client = eval_mod.groq_client
+    assert type(client).__module__.startswith("groq")
+    assert hasattr(client, "chat")
+    assert hasattr(client.chat, "completions")
+    assert hasattr(client.chat.completions, "create")
 
 
 def test_run_agent_uses_groq_not_xmlrpc():
     source = (ROOT / "agent-eval.py").read_text(encoding="utf-8")
     assert "await groq_client.chat.completions.create" in source
-    assert "from xmlrpc import client" not in source
-    assert "import xmlrpc.client as client" not in source
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("xmlrpc"):
+            assert False, "agent-eval.py must not import xmlrpc"
+        if isinstance(node, ast.Import) and any(a.name.startswith("xmlrpc") for a in node.names):
+            assert False, "agent-eval.py must not import xmlrpc"

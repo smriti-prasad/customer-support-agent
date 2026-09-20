@@ -1,25 +1,138 @@
 import asyncio
 import json
 import os
+import sqlite3
 
 from dotenv import load_dotenv
 from groq import AsyncGroq
 
-from agent import (
-    get_customer_details,
-    get_order_details,
-    search_policy,
-    tools,
-)
 
-
-# Groq chat client. Do not bind this name to xmlrpc.client — that module has
-# no `.chat` attribute and is what caused:
-#   AttributeError: module 'xmlrpc.client' has no attribute 'chat'
+# LLM client must be groq.AsyncGroq. stdlib xmlrpc.client has no `.chat`
+# and raises: AttributeError: module 'xmlrpc.client' has no attribute 'chat'
 load_dotenv()
 
 groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY") or "missing-groq-key")
 MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+db = sqlite3.connect(":memory:")
+db.executescript(
+    "CREATE TABLE customers (id INT PRIMARY KEY, name TEXT, email TEXT);"
+    "CREATE TABLE orders (id INT PRIMARY KEY, customer_id INT, amount REAL, status TEXT);"
+    "CREATE TABLE refunds (id INT PRIMARY KEY, order_id INT, amount REAL, approved INT);"
+    "INSERT INTO customers VALUES (1, 'Alice Smith', 'alice@example.com');"
+    "INSERT INTO customers VALUES (2, 'Bob Jones', 'bob@example.com');"
+    "INSERT INTO orders VALUES (101, 1, 150.00, 'Delivered');"
+    "INSERT INTO orders VALUES (102, 2, 75.00, 'Shipped');"
+)
+
+POLICIES = [
+    {
+        "text": "Refunds are permitted within 30 days of purchase for orders in 'Delivered' or 'Shipped' status.",
+        "keywords": ["refund", "days", "limit", "period"],
+    },
+    {
+        "text": "Refunds exceeding $100 require manager approval. Orders under $100 can be auto-approved.",
+        "keywords": ["refund", "amount", "limit", "approval", "manager"],
+    },
+    {
+        "text": "Electronics items are subject to a 15% restocking fee if opened.",
+        "keywords": ["restocking", "fee", "electronics", "opened"],
+    },
+]
+
+
+def get_customer_details(customer_id):
+    print(f"   [API GET /api/customers/{customer_id}] Fetching customer details from database...")
+    cursor = db.cursor()
+    cursor.execute("SELECT id, name, email FROM customers WHERE id = ?", (customer_id,))
+    row = cursor.fetchone()
+    if row:
+        return json.dumps({"id": row[0], "name": row[1], "email": row[2]})
+    return json.dumps({"error": "Customer not found."})
+
+
+def get_order_details(order_id):
+    print(f"   [API GET /api/orders/{order_id}] Fetching order details from database...")
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT id, customer_id, amount, status FROM orders WHERE id = ?",
+        (order_id,),
+    )
+    row = cursor.fetchone()
+    if row:
+        return json.dumps(
+            {"id": row[0], "customer_id": row[1], "amount": row[2], "status": row[3]}
+        )
+    return json.dumps({"error": "Order not found."})
+
+
+def search_policy(query):
+    print(f"   [RAG EXECUTE] Query: {query}")
+    words = query.lower().split()
+    results = []
+    for policy in POLICIES:
+        score = sum(1 for w in words if any(w in kw for kw in policy["keywords"]))
+        if score > 0:
+            results.append((score, policy["text"]))
+    results.sort(reverse=True)
+    extracted = [r[1] for r in results]
+    return json.dumps(extracted if extracted else ["No matching policies found."])
+
+
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_customer_details",
+            "description": "Retrieve customer profile information by customer ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {
+                        "type": "integer",
+                        "description": "The unique ID of the customer.",
+                    }
+                },
+                "required": ["customer_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_order_details",
+            "description": "Retrieve order status, amount, and owner details by order ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "integer",
+                        "description": "The unique order ID.",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_policy",
+            "description": "Search customer refund policies using a keyword string.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The keyword search term for locating refund limits and restocking fee rules.",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
 
 SYSTEM_PROMPT = (
     "You are a customer support agent. Use tools to look up orders, customers, "
@@ -158,7 +271,6 @@ def score_case(test, history):
 
 
 def assert_llm_client_is_groq():
-    """Fail fast with the original error shape if client is still xmlrpc."""
     chat = getattr(groq_client, "chat", None)
     if chat is None:
         raise AttributeError(
@@ -175,8 +287,7 @@ async def run_eval_suite():
     assert_llm_client_is_groq()
     if not os.getenv("GROQ_API_KEY"):
         raise SystemExit(
-            "GROQ_API_KEY is not set. Refusing to run the suite against xmlrpc "
-            "or a mock. Export GROQ_API_KEY and retry."
+            "GROQ_API_KEY is not set. Export GROQ_API_KEY and retry."
         )
     print()
 
