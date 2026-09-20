@@ -1,5 +1,4 @@
 import json
-from pyexpat.errors import messages
 import sqlite3
 import asyncio
 import os
@@ -442,4 +441,5 @@ async def main():
     results2 = await run_state_graph("Is there a restocking fee for items?")
     pretty_print_run(results2)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
